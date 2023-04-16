@@ -52,14 +52,16 @@
 #define FAMILY_CODE_DS2740 0x36  //Current measurement
 #define FAMILY_CODE_DS2502 0x09  //1k EEPROM
 
-static const int ReadScratchPadCommand = 0xBE;
-static const int ReadPowerSupplyCommand = 0xB4;
-static const int ConvertTempCommand = 0x44;
+static const int ReadScratchPadCommand = 0xAA;
+static const int WriteScratchPadCommand = 0x0F;
+static const int CopyScratchPadCommand = 0x55;
+static const int ReadMemoryCommand = 0xF0;
+
 static const int MatchROMCommand = 0x55;
 static const int ReadROMCommand = 0x33;
 static const int SearchROMCommand = 0xF0;
 static const int SkipROMCommand = 0xCC;
-static const int WriteScratchPadCommand = 0x4E;
+
 static const int ROMSize = 8;
 struct rom_address_t {
 	uint8_t rom[ROMSize];
@@ -88,11 +90,10 @@ struct rom_address_t {
  */
 class One_wire {
 public:
-	enum {
-		invalid_conversion = -1000,
-		not_controllable = 0xFFFFFFFF
-	};
-
+	uint8_t ram[10];
+	uint8_t ta1;
+	uint8_t ta2;
+	uint8_t e_s;
 	/** Create a one wire bus object connected to the specified pins
 	 *
 	 * The bus might either by regular powered or parasite powered. If it is parasite
@@ -102,10 +103,11 @@ public:
 	 * sufficient as long as the number of devices is limited.
 	 *
 	 * @param data_pin pin for the data bus
-	 * @param power_pin (optional) pin to control the power MOSFET
-	 * @param power_polarity (optional) which sets active state (false for active low (default), true for active high)
 	 */
-	One_wire(uint data_pin, uint power_pin = not_controllable, bool power_polarity = false);
+	One_wire(uint data_pin)
+		: _data_pin(data_pin) {
+	}
+
 	~One_wire();
 
 	/**
@@ -129,35 +131,6 @@ public:
 	static rom_address_t &get_address(int index);
 
 	/**
-	 * This routine will initiate the temperature conversion within
-	 * one or all temperature devices.
-	 *
-	 * @param wait if true or parasitic power is used, waits up to 750 ms for
-	 * conversion otherwise returns immediately.
-	 * @param address allows the function to apply to a specific device or
-	 * to all devices on the 1-Wire bus.
-	 * @returns milliseconds until conversion will complete.
-	 */
-	int convert_temperature(rom_address_t &address, bool wait, bool all);
-
-	/**
-	 * This function will return the temperature measured by the specific device.
-	 *
-	 * @param convert_to_fahrenheit whether to convert the degC to Fahrenheit
-	 * @returns temperature for that scale, or OneWire::invalid_conversion (-1000) if CRC error detected.
-	 */
-	float temperature(rom_address_t &address, bool convert_to_fahrenheit = false);
-
-	/**
-	 * This function sets the temperature resolution for supported devices
-	 * in the configuration register.
-	 *
-	 * @param resolution number between 9 and 12 to specify resolution
-	 * @returns true if successful
-	 */
-	bool set_resolution(rom_address_t &address, unsigned int resolution);
-
-	/**
 	 * Assuming a single device is attached, do a Read ROM
 	 *
 	 * @param rom_address the address will be filled into this parameter
@@ -172,13 +145,16 @@ public:
 	 */
 	static rom_address_t address_from_hex(const char *hex_address);
 
+	int read_scratch_pad(rom_address_t &address);
+
+	int write_scratch_pad(rom_address_t &address, uint16_t data_address);
+
+	int read_memory(rom_address_t &address, uint16_t data_address, uint8_t* data, int len);
+
+	int copy_scratch_pad(rom_address_t &address);
+
 private:
 	uint _data_pin;
-	uint _parasite_pin;
-	bool _parasite_power{};
-	bool _power_mosfet;
-	bool _power_polarity;
-	uint8_t ram[9]{};
 
 	int _last_discrepancy;	// search state
 	bool _last_device;  // search state
@@ -206,12 +182,6 @@ private:
 	bool ram_checksum_error();
 
 	bool search_rom_find_next();
-
-	void read_scratch_pad(rom_address_t &address);
-
-	void write_scratch_pad(rom_address_t &address, int data);
-
-	bool power_supply_available(rom_address_t &address, bool all);
 };
 
 

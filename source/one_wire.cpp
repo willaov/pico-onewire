@@ -17,24 +17,9 @@
 
 std::vector<rom_address_t> found_addresses;
 
-One_wire::One_wire(uint data_pin, uint power_pin, bool power_polarity)
-		: _data_pin(data_pin),
-		  _parasite_pin(power_pin),
-		  _power_polarity(power_polarity),
-		  _power_mosfet(power_pin != not_controllable) {
-}
-
 void One_wire::init() {
 	gpio_init(_data_pin);
-	if (_parasite_pin != not_controllable) {
-		gpio_init(_parasite_pin);
-	}
-	for (uint8_t &byte_counter : ram) {
-		byte_counter = 0x00;
-	}
-
-	rom_address_t address{};
-	_parasite_power = !power_supply_available(address, true);
+	gpio_set_drive_strength(_data_pin, GPIO_DRIVE_STRENGTH_2MA);
 }
 
 One_wire::~One_wire() {
@@ -309,137 +294,59 @@ uint8_t One_wire::crc_byte(uint8_t crc, uint8_t byte) {
 	return crc;
 }
 
-int One_wire::convert_temperature(rom_address_t &address, bool wait, bool all) {
-	int delay_time = 750;// Default delay time
-	uint8_t resolution;
-	if (all)
-		skip_rom();// Skip ROM command, will convert for ALL devices, wait maximum time
-	else {
-		match_rom(address);
-		if ((FAMILY_CODE == FAMILY_CODE_DS18B20) || (FAMILY_CODE == FAMILY_CODE_DS1822)) {
-			resolution = (uint8_t) (ram[4] & 0x60);
-			if (resolution == 0x00) // 9 bits
-				delay_time = 94;
-			if (resolution == 0x20) // 10 bits
-				delay_time = 188;
-			if (resolution == 0x40) // 11 bits.
-				delay_time = 375;
-			//Note 12bits uses the 750ms default
-		}
-		if (FAMILY_CODE == FAMILY_CODE_MAX31826) {
-			delay_time = 150;// 12bit conversion
-		}
-	}
-
-	onewire_byte_out(ConvertTempCommand);// perform temperature conversion
-	if (_parasite_power) {
-		if (_power_mosfet) {
-			gpio_put(_parasite_pin, _power_polarity);// Parasite power strong pull up
-			sleep_ms(delay_time);
-			gpio_put(_parasite_pin, !_power_polarity);
-			delay_time = 0;
-		} else {
-			gpio_set_dir(_data_pin, GPIO_OUT);
-			gpio_put(_data_pin, true);
-			sleep_ms(delay_time);
-			gpio_set_dir(_data_pin, GPIO_IN);
-		}
-	} else {
-		if (wait) {
-			sleep_ms(delay_time);
-			delay_time = 0;
-		}
-	}
-	return delay_time;
-}
-
-void One_wire::read_scratch_pad(rom_address_t &address) {
-	int i;
+int One_wire::read_scratch_pad(rom_address_t &address) {
 	match_rom(address);
 	onewire_byte_out(ReadScratchPadCommand);
-	for (i = 0; i < 9; i++) {
+	ta1 = onewire_byte_in();
+	ta2 = onewire_byte_in();
+	e_s = onewire_byte_in();
+	for (int i = 0; i < 10; i++) {
 		ram[i] = onewire_byte_in();
 	}
+	return 0;
 }
 
-bool One_wire::set_resolution(rom_address_t &address, unsigned int resolution) {
-	bool answer = false;
-	switch (FAMILY_CODE) {
-		case FAMILY_CODE_DS18B20:
-		case FAMILY_CODE_DS18S20:
-		case FAMILY_CODE_DS1822:
-			resolution = resolution - 9;
-			if (resolution < 4) {
-				resolution = resolution << 5;                    // align the bits
-				ram[4] = (uint8_t) ((ram[4] & 0x60) | resolution);// mask out old data, insert new
-				write_scratch_pad(address, (ram[2] << 8) + ram[3]);
-				answer = true;
-			}
-			break;
-		default:
-			break;
-	}
-	return answer;
-}
-
-void One_wire::write_scratch_pad(rom_address_t &address, int data) {
-	ram[3] = (uint8_t) data;
-	ram[2] = (uint8_t) (data >> 8);
+int One_wire::write_scratch_pad(rom_address_t &address, uint16_t data_address) {
+	uint8_t data_addr_lsb = (uint8_t) data_address;
+	uint8_t data_addr_msb = (uint8_t) (data_address >> 8);
 	match_rom(address);
 	onewire_byte_out(WriteScratchPadCommand);
-	onewire_byte_out(ram[2]);// T(H)
-	onewire_byte_out(ram[3]);// T(L)
-	if ((FAMILY_CODE == FAMILY_CODE_DS18S20) || (FAMILY_CODE == FAMILY_CODE_DS18B20) ||
-		(FAMILY_CODE == FAMILY_CODE_DS1822)) {
-		onewire_byte_out(ram[4]);// Configuration register
+	onewire_byte_out(data_addr_lsb);// TA1
+	onewire_byte_out(data_addr_msb);// TA2
+	for (int i=0; i < 8; i++) {
+		onewire_byte_out(ram[i]);
 	}
+	ram[8] = onewire_byte_in();
+	ram[9] = onewire_byte_in();
+	return 0;
 }
 
-float One_wire::temperature(rom_address_t &address, bool convert_to_fahrenheit) {
-	float answer, remaining_count, count_per_degree;
-	int reading;
-	read_scratch_pad(address);
-	if (ram_checksum_error())
-		// Indicate we got a CRC error
-		answer = invalid_conversion;
-	else {
-		reading = (ram[1] << 8) + ram[0];
-		if (reading & 0x8000) {                    // negative degrees C
-			reading = 0 - ((reading ^ 0xffff) + 1);// 2's comp then convert to signed int
-		}
-
-		answer = (float) reading;
-
-		switch (FAMILY_CODE) {
-			case FAMILY_CODE_MAX31826:
-			case FAMILY_CODE_DS18B20:
-			case FAMILY_CODE_DS1822:
-				answer = answer / 16.0f;
-				break;
-			case FAMILY_CODE_DS18S20:
-				remaining_count = ram[6];
-				count_per_degree = ram[7];
-				answer = (float) (std::floor(answer / 2.0f) - 0.25f +
-								  (count_per_degree - remaining_count) / count_per_degree);
-				break;
-			default:
-				printf("Unsupported device family\n");
-				break;
-		}
-
-		if (convert_to_fahrenheit) {
-			answer = answer * 9.0f / 5.0f + 32.0f;
-		}
-	}
-	return answer;
-}
-
-bool One_wire::power_supply_available(rom_address_t &address, bool all) {
-	if (all) {
-		skip_rom();
+int One_wire::copy_scratch_pad(rom_address_t &address) {
+	match_rom(address);
+	onewire_byte_out(CopyScratchPadCommand);
+	onewire_byte_out(ta1);
+	onewire_byte_out(ta2);
+	onewire_byte_out(e_s);
+	gpio_put(_data_pin, true);
+	sleep_ms(15);
+	if (onewire_byte_in() == 0xAA) {
+		return 0;
+	} else if (onewire_byte_in() == 0xFF) {
+		return 1;
 	} else {
-		match_rom(address);
+		return 10;
 	}
-	onewire_byte_out(ReadPowerSupplyCommand);
-	return onewire_bit_in();
+}
+
+int One_wire::read_memory(rom_address_t &address, uint16_t data_address, uint8_t* data, int len) {
+	uint8_t data_addr_lsb = (uint8_t) data_address;
+	uint8_t data_addr_msb = (uint8_t) (data_address >> 8);
+	match_rom(address);
+	onewire_byte_out(ReadMemoryCommand);
+	onewire_byte_out(data_addr_lsb);// TA1
+	onewire_byte_out(data_addr_msb);// TA2
+	for (int i = 0; i < len; i++) {
+		data[i] = onewire_byte_in();
+	}
+	return 0;
 }
