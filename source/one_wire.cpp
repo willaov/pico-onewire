@@ -142,7 +142,7 @@ bool One_wire::search_rom_find_next() {
 	uint8_t byte_counter, bit_mask;
 
 	if (!reset_check_for_device()) {
-		printf("Failed to reset one wire bus\n");
+		// printf("Failed to reset one wire bus\n");
 		return false;
 	} else {
 		if (_last_device) {
